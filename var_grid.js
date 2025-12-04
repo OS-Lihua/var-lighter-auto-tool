@@ -191,6 +191,10 @@ class BTCAutoTrading {
         this.tradingEnabled = true;
         this.cycleCount = 0;
         console.log('BTC 50单网格自动交易已启动');
+        console.log('脚本免费开源，作者推特@ddazmon');
+        console.log('用谁的邀请码不是用，欢迎兄弟们使用邀请码，点返金额原路返回：');
+        console.log('OMNINU3G7KVK');
+        console.log('OMNIBGZ4ETT9');
 
         // 改用递归的setTimeout确保不重叠
         const executeWithInterval = async () => {
