@@ -5,20 +5,20 @@ class BTCAutoTrading {
         START_PRICE: 80000,
         END_PRICE: 100000,
         MIN_ORDER_INTERVAL: 2000,     // 下单最小间隔10秒（防风控）
-        ORDER_COOLDOWN: 1000,          // 单个订单成功后冷却3秒
-        MONITOR_INTERVAL: 2000,       // 主循环检查间隔（建议8~15秒）
+        ORDER_COOLDOWN: 1500,          // 单个订单成功后冷却3秒
+        MONITOR_INTERVAL: 3000,       // 主循环检查间隔（建议8~15秒）
         MAX_PROCESSED_ORDERS: 100,
         POSITION_CHECK_DELAY: 2000,
         MAX_POSITION_CHECKS: 60,
         UI_OPERATION_DELAY: 500,
-        PRICE_UPDATE_DELAY: 1000,
-        ORDER_SUBMIT_DELAY: 1000,
+        PRICE_UPDATE_DELAY: 1500,
+        ORDER_SUBMIT_DELAY: 1500,
         CLOSE_POSITION_CYCLE: 30      
     };
 
     // ========== 网格策略核心配置（全部集中在这里调参！）==========
     static GRID_STRATEGY_CONFIG = {
-        TOTAL_ORDERS: 18,               // 固定50单滑动窗口
+        TOTAL_ORDERS: 12,               // 固定50单滑动窗口
 
         // 窗口宽度（核心参数！建议 0.08~0.18）
         WINDOW_PERCENT: 0.12,           // 12% → 7万时 ≈ ±4200美元范围
@@ -34,11 +34,11 @@ class BTCAutoTrading {
         // 安全保护
         MAX_DRIFT_BUFFER: 2000,         // 超出窗口太多自动停止扩展
         MIN_VALID_PRICE: 10000,         // 防止崩盘挂到地板价
-        MAX_MULTIPLIER: 50,         // 动态开仓大小的比例最大开仓倍数
+        MAX_MULTIPLIER: 15,         // 动态开仓大小的比例最大开仓倍数
 
         // --- 策略配置 ---
-        RSI_MIN: 30,                   // RSI 下限
-        RSI_MAX: 70,                    // RSI 上限
+        RSI_MIN: 35,                   // RSI 下限
+        RSI_MAX: 65,                    // RSI 上限
         ADX_TREND_THRESHOLD: 25,                   // ADX 下限
         ADX_STRONG_TREND: 30                   // ADX 下限
     };
@@ -85,8 +85,6 @@ class BTCAutoTrading {
 
     // ==================== 准备交易环境 ====================
     async prepareTradingEnvironment() {
-        console.log('准备交易环境...');
-
         try {
             // 1. 点击"未成交订单"
             const pendingTab = this.findPendingOrdersTab();
@@ -144,6 +142,7 @@ class BTCAutoTrading {
                 return true;
             }
             checks++;
+            console.error('请先手动设置仓位数量！');
             await this.delay(BTCAutoTrading.TRADING_CONFIG.POSITION_CHECK_DELAY);
         }
         console.error('超时：请先手动设置仓位数量！');
@@ -247,7 +246,9 @@ class BTCAutoTrading {
                 if (adx > ADX_STRONG_TREND) {
                     console.log(`%c[停止] ADX(${adx.toFixed(2)}) > ${ADX_STRONG_TREND}，市场处于强趋势行情，不适合网格策略。关闭所有仓位。`, 
                                "color: red; font-weight: bold;");
+                    await this.cancelAllOrder();
                     await this.simpleClosePosition();
+                    // await this.cancelAllOrder();
                     return;
                 }
                 
@@ -263,7 +264,9 @@ class BTCAutoTrading {
                     if (rsi < (RSI_MIN - TREND_RSI_TOLERANCE) || rsi > (RSI_MAX + TREND_RSI_TOLERANCE)) {
                         console.log(`%c[暂停] 趋势市场中RSI(${rsi.toFixed(2)})过于极端，暂停操作。`, 
                                    "color: orange;");
+                        await this.cancelAllOrder();
                         await this.simpleClosePosition();
+                        // await this.cancelAllOrder();
                         return;
                     }
                     
@@ -280,6 +283,7 @@ class BTCAutoTrading {
                     if (rsi < RSI_MIN || rsi > RSI_MAX) {
                         console.log(`%c[等待] RSI(${rsi.toFixed(2)})不在${RSI_MIN}-${RSI_MAX}区间，暂停操作等待回归。`, 
                                    "color: red;");
+                        await this.cancelAllOrder();
                         await this.simpleClosePosition();
                         return;
                     }
@@ -293,12 +297,15 @@ class BTCAutoTrading {
                 console.warn("未能获取完整的指标数据，请到推特@ddazmon查看使用教程");
                 // 根据您的风险偏好，可以选择：
                 // 1. 保守：关闭仓位并返回
-                // await this.simpleClosePosition();
+                await this.cancelAllOrder();
+                await this.simpleClosePosition();
+                // await this.cancelAllOrder();
                 return;
             }
         } catch (e) {
             console.error("读取图表指标失败:", e);
             // 发生错误时，为了安全建议关闭仓位
+            await this.cancelAllOrder();
             await this.simpleClosePosition();
             return;
         }
@@ -346,9 +353,40 @@ class BTCAutoTrading {
 
     }
 
+    async cancelAllOrder() {
+        console.log('准备关闭所有仓位');
+        const ready = await this.prepareTradingEnvironment();
+        if (!ready) return console.error('环境准备失败，无法启动');
+
+        const marketData = await this.getCompleteMarketData();
+        if (!marketData.askPrice || !marketData.bidPrice) {
+            console.log('无法读取价格，跳过');
+            return;
+        }
+        const { askPrice, bidPrice, existingSellOrders = [], existingBuyOrders = [] } = marketData;
+
+        console.log('关闭所有卖单');
+        if (existingSellOrders && existingSellOrders.length > 0) {
+            console.log(`开始撤销 ${existingSellOrders.length} 个卖单...`);
+            for (const order of existingSellOrders) {
+                await this.orderManager.cancelByPrice(order);  // 添加 await
+                await this.delay(500);  // 撤单后等待1.5秒
+            }
+        }
+        console.log('关闭所有买单');
+        if (existingBuyOrders && existingBuyOrders.length > 0) {
+            console.log(`开始撤销 ${existingBuyOrders.length} 个买单...`);
+            for (const order of existingBuyOrders) {
+                await this.orderManager.cancelByPrice(order);  // 添加 await
+                await this.delay(500);  // 撤单后等待1.5秒
+            }
+        }
+
+    }
+
     // 更简洁的辅助函数版本
     async simpleClosePosition() {
-        console.log('开始简化版关闭仓位操作...');
+        console.log('开始关闭仓位操作...');
         
         // 查找"仓位"文本
         const walker = document.createTreeWalker(
@@ -404,6 +442,7 @@ class BTCAutoTrading {
                 }
             }, 1000);
         }, 1000);
+
     }
 
 
@@ -462,7 +501,7 @@ class BTCAutoTrading {
                     result.adx = val;
                 }
             });
-
+            console.log('指标：',resolve(result));
             resolve(result);
         });
     }
@@ -768,7 +807,6 @@ class BTCOrderManager {
         }
     }
 
-    // 新增简化方法
     async getCurrentPrice() {
         const askEl = document.querySelector(BTCAutoTrading.SELECTORS.ASK_PRICE);
         const bidEl = document.querySelector(BTCAutoTrading.SELECTORS.BID_PRICE);
@@ -782,6 +820,7 @@ class BTCOrderManager {
     }
 
     async cancelByPrice(price) {
+        console.log(`准备取消 $${price}`);
         const currentPrice = await this.getCurrentPrice();
         if (currentPrice) {
             const prices = Array.isArray(price) ? price : [price];
@@ -873,7 +912,6 @@ class BTCOrderManager {
         await new Promise(r => setTimeout(r, 1000));
       }
 
-      console.log('全部取消任务执行完毕！');
     }
 
     delay(ms) { return new Promise(r => setTimeout(r, ms)); }
@@ -886,6 +924,7 @@ const btcAutoTrader = new BTCAutoTrading();
 // btcAutoTrader.stopAutoTrading();         // 停止
 // btcAutoTrader.getStatus();               // 查看状态（现在会显示距离下次清仓的剩余循环数）
 // btcAutoTrader.clearOrderHistory();       // 清空记录
+// btcAutoTrader.cancelAllOrder();       // 关闭所有挂单
 
 // 建议第一次运行前先手动设置好仓位数量，然后执行：
-btcAutoTrader.startAutoTrading(1000);
+// btcAutoTrader.startAutoTrading(1000);
